@@ -1,0 +1,575 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+	<meta charset="utf-8" />
+	<title>Son of Boomshine</title>
+	<style type="text/css">
+	canvas{
+		border:1px solid gray;
+	}
+	</style>
+	<script src="js/utilities.js"></script>
+	<script>
+		"use strict";
+		//declare some global variables
+		var canvas, ctx;
+		var CANVAS_WIDTH = 640, CANVAS_HEIGHT = 480;
+		// CONSTANTS
+		var START_RADIUS = 8;
+		var MAX_SPEED = 80;
+		var MAX_RADIUS = 45;
+		var MIN_RADIUS = 2;
+		var MAX_LIFETIME = 300;
+		var EXPLOSION_SPEED = 30;
+		var IMPLOSION_SPEED = 42;
+		var CIRCLE_STATE_NORMAL = 0;
+		var CIRCLE_STATE_EXPLODING = 1;
+		var CIRCLE_STATE_MAX_SIZE = 2;
+		var CIRCLE_STATE_IMPLODING = 3;
+		var CIRCLE_STATE_DONE = 4;
+		var GAME_STATE_BEGIN = 0;
+		var GAME_STATE_DEFAULT = 1;
+		var GAME_STATE_EXPLODING = 2;
+		var GAME_STATE_ROUND_OVER = 3;
+		var GAME_STATE_REPEAT_LEVEL = 4;
+		var GAME_STATE_END = 5;
+		var NUM_CIRCLES_START = 5;
+		var NUM_CIRCLES_END = 20;
+		var PERCENT_CIRCLES_TO_ADVANCE = 0.2;
+		var gameState = GAME_STATE_BEGIN;
+		var roundScore;
+		var totalScore = 0;
+		//high score screen track
+		var highScoreSoundElement;
+		//bg sound
+		var BGSOUND_VOLUME = 0.2;
+		var bgSoundElement;
+		//goal sound
+		var goalSoundElement;
+		var GOAL_SOUND_VOLUME = 2.0;
+
+		//how many circles will be on the screen
+		var numCircles = NUM_CIRCLES_START;
+		//holds the circles that will be created
+		var circles = [];
+		//high score board
+		var highScores = [0,0,0,0,0,0,0,0,0,0];
+		//array of placement strings
+		var placement = ["First", "Second", "Third", "Fourth", "Fifth", "Sixth", "Seventh", "Eighth", "Ninth", "Tenth"];
+		
+		//keeps track of if certain keys were pressed
+		var keydown = [];
+		//ASCII values of keys
+		var KEYBOARD = 
+		{
+			"H":72,
+			"KEY_SPACE":32
+		};
+		var paused = false;
+		var animationID;
+		
+		
+		window.onload = init;
+	
+		function init(){
+			console.log("init called");
+			
+			//set up canvas
+			canvas = document.querySelector("canvas");
+			ctx = canvas.getContext("2d");
+			
+			//set up background sound
+			bgSoundElement = document.querySelector("#bgsound");
+			//set up high score screen sound
+			highScoreSoundElement = document.querySelector("#highScoreSound");
+			//set up goal sound
+			goalSoundElement = document.querySelector("#goalMet");
+			
+			//load level
+			reset();
+			
+			//hook up events
+			//game doesn't have focus
+			window.onblur = function()
+			{
+				paused = true;
+				playSingleSound(bgSoundElement, BGSOUND_VOLUME, true);
+				playSingleSound(highScoreSoundElement, BGSOUND_VOLUME, true);
+				cancelAnimationFrame(animationID);
+				//call update() once so that our paused screen gets drawn
+				update();
+			};
+			//game has focus
+			window.onfocus = function()
+			{
+				paused = false;
+				playSingleSound(bgSoundElement, BGSOUND_VOLUME, false);
+				update();
+			};
+			
+			//hook up keypress event for High Score screen
+			window.addEventListener("keydown", function(e)
+			{
+				console.log("keydown = " + e.keyCode);
+				keydown[e.keyCode] = true;
+				
+				update();
+				
+				//press space key to exit high score screen
+				if(keydown[KEYBOARD.KEY_SPACE])
+				{
+					//prevents the animation frame from stacking on itself and causing
+					//everything to exponentially go faster
+					cancelAnimationFrame(animationID);
+					playSingleSound(highScoreSoundElement, BGSOUND_VOLUME, true);
+					update();
+				}
+			});
+			
+			window.addEventListener("keyup",function(e)
+			{
+				//console.log("keyup = " + e.keyCode);
+				keydown[e.keyCode] = false;
+			});
+			
+			//hook mouse event
+			canvas.onmousedown = doMousedown;
+			
+			
+			
+			//start looping
+			update();
+		}
+		
+		//creates a new level of circles
+		function reset()
+		{
+			numCircles += 5;
+			roundScore = 0;
+			circles = makeCircles(numCircles);
+		}
+		
+		//repeat the level if the goal was not met
+		function repeat()
+		{
+			roundScore = 0;
+			circles = makeCircles(numCircles);
+		}
+		
+		//restarts the game after game over
+		function restart()
+		{
+			numCircles = NUM_CIRCLES_START + 5;
+			roundScore = 0;
+			totalScore = 0;
+			circles = makeCircles(numCircles);
+		}
+		
+		
+		function doMousedown(e)
+		{
+			if(paused)
+			{
+				paused = false;
+				update();
+				return;
+			}
+			
+			//click only 1 circle
+			if (gameState == GAME_STATE_EXPLODING) return;
+			
+			if (gameState == GAME_STATE_ROUND_OVER)
+			{
+				gameState = GAME_STATE_DEFAULT;
+				reset();
+				return;
+			}
+			
+			if (gameState == GAME_STATE_REPEAT_LEVEL)
+			{
+				gameState = GAME_STATE_DEFAULT;
+				repeat();
+				return;
+			}
+			
+			if (gameState == GAME_STATE_END)
+			{
+				gameState = GAME_STATE_DEFAULT;
+				restart();
+				return;
+			}
+			
+			var mouse = getMouse(e);
+			//console.log("(mouse.x, mouse.y) = " + mouse.x + ", " + mouse.y);
+			for (var i = circles.length - 1; i >= 0; i--)
+			{
+				var c = circles[i];
+				if (pointInsideCircle(mouse.x, mouse.y, c))
+				{
+					circleClicked(c);
+					break;
+				}
+			}
+			
+		}
+		
+		function drawHUD()
+		{
+			//ctx.globalAlpha = 1.0;
+			
+			// draw score
+			// drawText(string, x, y, size, color)
+			drawText("Score this round: " + roundScore + " of " + numCircles, 20, 20, 16, "#ddd");
+			drawText("Goal this round: " + roundScore + "/" + (numCircles * PERCENT_CIRCLES_TO_ADVANCE),
+			20, 45, 16, "#ddd");
+			drawText("Total Score: " + totalScore, CANVAS_WIDTH - 235, 20, 16, "#ddd");
+			drawText("Press H to go to High Scores", CANVAS_WIDTH - 300, 45, 16, "white");
+			
+			//Draw out the game messages to the player for each state that can occur
+			if(gameState == GAME_STATE_BEGIN){
+				ctx.save();
+				ctx.textAlign = "center";
+				ctx.textBaseline = "middle";
+				drawText("To begin, click a circle", CANVAS_WIDTH/2, CANVAS_HEIGHT/2, 34, "white");
+				ctx.restore();
+			} // end if
+			
+			if(gameState == GAME_STATE_REPEAT_LEVEL)
+			{
+				ctx.save();
+				ctx.textAlign = "center";
+				ctx.textBaseline = "middle";
+				drawText("Round Over", CANVAS_WIDTH/2, CANVAS_HEIGHT/2 - 40, 34,	 "red");
+				drawText("You missed the goal of " + (numCircles * PERCENT_CIRCLES_TO_ADVANCE) +
+				" circles", CANVAS_WIDTH/2, CANVAS_HEIGHT/2, 26, "white");
+				drawText("Click to retry..." , CANVAS_WIDTH/2 , CANVAS_HEIGHT/2 + 35, 24, "#ddd");
+				ctx.restore();
+			}
+			
+			if(gameState == GAME_STATE_ROUND_OVER){
+				ctx.save();
+				ctx.textAlign = "center";
+				ctx.textBaseline = "middle";
+				drawText("Round Over", CANVAS_WIDTH/2, CANVAS_HEIGHT/2 - 40, 34,	 "red");
+				drawText("Click to continue", CANVAS_WIDTH/2, CANVAS_HEIGHT/2, 34, "white");
+				drawText("Goal next round: " + ((numCircles + 5) * PERCENT_CIRCLES_TO_ADVANCE) + " of " +
+				(numCircles + 5) + " circles", CANVAS_WIDTH/2 , CANVAS_HEIGHT/2 + 35, 24, "#ddd");
+				
+				ctx.restore();
+			} // end if
+			
+			if(gameState == GAME_STATE_END)
+			{
+				ctx.save();
+				ctx.textAlign = "center";
+				ctx.textBaseline = "middle";
+				drawText("Game Over", CANVAS_WIDTH/2, CANVAS_HEIGHT/2 - 40, 34, "red");
+				drawText("Your final score was " + totalScore, CANVAS_WIDTH/2, CANVAS_HEIGHT/2, 34, "white");
+				drawText("Click to play again...", CANVAS_WIDTH/2, CANVAS_HEIGHT/2 + 35, 24, "white");
+				ctx.restore();
+			} //end if
+		} // end function
+		
+		function checkForCollisions()
+		{
+			if(gameState == GAME_STATE_EXPLODING){
+				// check for collisions between circles
+				for(var i=0;i<circles.length; i++){
+					var c1 = circles[i];
+					// only check for collisions if c1 is exploding
+					if (c1.state === CIRCLE_STATE_NORMAL) continue;   
+					if (c1.state === CIRCLE_STATE_DONE) continue;
+					for(var j=0;j<circles.length; j++){
+						var c2 = circles[j];
+						// don't check for collisions if c2 is the same circle
+						if (c1 === c2) continue; 
+						 // don't check for collisions if c2 is already exploding 
+						if (c2.state != CIRCLE_STATE_NORMAL ) continue;  
+						if (c2.state === CIRCLE_STATE_DONE) continue;
+						
+						// Now you finally can check for a collision
+						if(circlesIntersect(c1,c2) ){
+							c2.state = CIRCLE_STATE_EXPLODING;
+							c2.xSpeed = c2.ySpeed = 0;
+							roundScore ++;
+						}
+					}
+				} // end for
+					
+				// round over?
+				var isOver = true;
+				for(var i=0;i<circles.length; i++){
+					var c = circles[i];
+					if(c.state != CIRCLE_STATE_NORMAL && c.state != CIRCLE_STATE_DONE){
+					 isOver = false;
+					 break;
+					}
+				} // end for
+				
+				if(isOver)
+				{
+					//was the goal met?
+					if(roundScore < Math.floor(numCircles * PERCENT_CIRCLES_TO_ADVANCE))
+					{
+						gameState = GAME_STATE_REPEAT_LEVEL;
+					}//end if REPEAT?
+					else
+					{
+						//goal met - start a new level
+						gameState = GAME_STATE_ROUND_OVER;
+						totalScore += roundScore;
+						playSound(goalSoundElement, GOAL_SOUND_VOLUME, false);
+						
+						//game over?
+						if(numCircles == NUM_CIRCLES_END)
+						{
+							gameState = GAME_STATE_END;
+							highScores.splice(9,1,totalScore);
+							console.log("High Score before sort: " + highScores);
+							highScores.sort(function(a,b){return b-a});
+							console.log("High Score after sort: " + highScores);
+							
+						}//end if numCircles == NUM_CIRCLES_END
+					}//end else
+				}//end if isOver	
+			} // end if GAME_STATE_EXPLODING
+		} // end function
+		
+		function circleClicked(circle)
+		{
+			circle.state = CIRCLE_STATE_EXPLODING;
+			circle.xSpeed = circle.ySpeed = 0;
+			gameState = GAME_STATE_EXPLODING;
+			roundScore++;
+		}
+		
+		//draws the pause screen
+		function drawPauseScreen()
+		{
+			ctx.save();
+			ctx.fillStyle = "black";
+			ctx.fillRect(0,0, CANVAS_WIDTH, CANVAS_HEIGHT);
+			ctx.textAlign = "center";
+			ctx.textBaseLine = "middle";
+			drawText("...PAUSED...", CANVAS_WIDTH/2, CANVAS_HEIGHT/2, 60, "white");
+			ctx.restore();
+		}
+		
+		//draw the high score screen
+		function drawHighScoreScreen()
+		{	
+			ctx.save();
+			ctx.fillStyle = "black";
+			ctx.fillRect(0,0, CANVAS_WIDTH, CANVAS_HEIGHT);
+			ctx.textAlign = "center";
+			ctx.textBaseLine = "middle";
+			drawText("---HIGH SCORE BOARD---", CANVAS_WIDTH/2, 40, 32, "white");
+			drawText("Press SPACE KEY to resume game", CANVAS_WIDTH/2, 70, 28, "white");
+			for (var i = 0; i < highScores.length; i++)
+			{
+				drawText(placement[i] + " Place: " + highScores[i], CANVAS_WIDTH/2, 100+(i*25), 20, "white");
+			}
+			ctx.restore();
+		}
+		
+		//move circles
+		function moveCircles()
+		{
+			for (var i = 0; i < circles.length; i++)
+			{
+				var c = circles[i];
+				
+				if (c.state === CIRCLE_STATE_DONE) continue;
+				if (c.state === CIRCLE_STATE_EXPLODING)
+				{
+					c.radius += EXPLOSION_SPEED / 60.0;
+					if(c.radius >= MAX_RADIUS)
+					{
+						c.state = CIRCLE_STATE_MAX_SIZE;
+						console.log("Circle #" + i + " hit MAX_RADIUS");
+					}
+					continue;
+				}
+				
+				if(c.state === CIRCLE_STATE_MAX_SIZE)
+				{
+					c.lifetime++;
+					if(c.lifetime >= MAX_LIFETIME)
+					{
+						c.state = CIRCLE_STATE_IMPLODING;
+						console.log("Circle #" + i + "hit MAX_LIFETIME");
+					}
+					continue;
+				}
+					
+				
+				
+				if(c.state === CIRCLE_STATE_IMPLODING)
+				{
+					c.radius -= IMPLOSION_SPEED / 60.0;
+					if (c.radius <= MIN_RADIUS)
+					{
+						console.log("Circle #" + i + " hit MIN_RADIUS and is gone");
+						c.state = CIRCLE_STATE_DONE;
+						continue;
+					}
+				}
+				
+				c.move();
+				
+				//Circles leave screen?
+				if (circleHitLeftRight(c.x,c.y,c.radius))
+				{
+					c.xSpeed *= -1;
+					
+				}
+			
+				if (circleHitTopBottom(c.x,c.y,c.radius))
+				{
+					c.ySpeed *= -1;
+					
+				}
+			}
+		}
+		
+		function update()
+		{
+			//paused?
+			if (paused)
+			{
+				ctx.globalAlpha = 1.0;
+				drawPauseScreen();
+				return;
+			}
+			
+			//was H pressed?
+			if (keydown[KEYBOARD.H])
+			{
+				//console.log("H was pressed");
+				
+				//pause the bg music in High Score Screen
+				playSingleSound(bgSoundElement, BGSOUND_VOLUME, true);
+				//play the high score screen track
+				playSound(highScoreSoundElement, BGSOUND_VOLUME, false);
+				ctx.globalAlpha = 1.0
+				drawHighScoreScreen();
+				return;
+			}
+			
+			//loop bgsound
+			playSingleSound(bgSoundElement, BGSOUND_VOLUME, false);
+			
+			//move circles
+			moveCircles();
+			
+			//check for collision
+			checkForCollisions();
+			
+			//draw background
+			ctx.fillStyle = "black";
+			ctx.fillRect(0,0, CANVAS_WIDTH, CANVAS_HEIGHT);
+			
+			//draw circle
+			ctx.globalAlpha = 0.9;
+			drawCircles();
+			
+			//draw HUD
+			ctx.globalAlpha = 1.0;
+			drawHUD();
+			
+			//the circles will have a after image trail
+			//Circles imploding have a fade out shimmer to them now
+			//ctx.globalAlpha = 0.15;
+			
+			animationID = requestAnimationFrame(update);
+		}
+		
+		function drawCircles()
+		{
+			if(gameState == GAME_STATE_ROUND_OVER || gameState == GAME_STATE_END 
+			|| gameState == GAME_STATE_REPEAT_LEVEL) ctx.globalAlpha = 0.05;
+			
+			for (var i=0; i < circles.length; i++)
+			{
+				var c = circles[i];
+				
+				ctx.beginPath();
+				ctx.arc(c.x,c.y,c.radius,0,Math.PI*2,false);
+				ctx.closePath();
+				ctx.fillStyle = c.fillStyle;
+				ctx.fill();
+			}
+		}
+		
+		function circleHitLeftRight(x,y,radius)
+		{
+			if (x < radius || x > CANVAS_WIDTH - radius)
+				return true;
+		}
+		
+		function circleHitTopBottom(x,y,radius)
+		{
+			if (y < radius || y > CANVAS_HEIGHT - radius)
+				return true;
+		}
+		
+		function drawText(string, x, y, size, color)
+		{
+			ctx.font = 'bold ' + size + 'px Monospace';
+			ctx.fillStyle = color;
+			ctx.fillText(string, x, y);
+		}
+		
+		
+		
+		function makeCircles(num)
+		{
+			var _circleMove = function(){
+				this.x += this.xSpeed * this.speed / 60.0;
+				this.y += this.ySpeed * this.speed / 60.0;
+			}
+			
+			var array = [];
+			for (var i = 0; i<num; i++)
+			{
+				var c = {};
+				c.x = getRandom(START_RADIUS * 2, CANVAS_WIDTH - START_RADIUS*2);
+				c.y = getRandom(START_RADIUS * 2, CANVAS_HEIGHT - START_RADIUS*2);
+				c.radius = START_RADIUS;
+				var randomVector = getRandomUnitVector();
+				c.xSpeed = randomVector.x;
+				c.ySpeed = randomVector.y;
+				c.speed = MAX_SPEED;
+				c.move = _circleMove;
+				c.fillStyle = getRandomColor();
+				c.state = CIRCLE_STATE_NORMAL;
+				c.lifetime = 0;
+				array.push(c);
+			}
+			return array;
+		}
+	</script>
+</head>
+<body>
+	<canvas width="640" height="480">
+		Get a real browser!
+	</canvas>
+	
+	<audio id="bgsound">
+		<source src="sounds/soundtrack.mp3" type="audio/mp3">
+		<source src="sounds/soundtrack.ogg" type="audio/ogg">
+	</audio>
+	
+	<audio id="highScoreSound">
+		<source src="sounds/high score screen track.mp3" type="audio/mp3">
+		<source src="sounds/high score screen track.ogg" type="audio/ogg">
+	</audio>
+	
+	<audio id="goalMet">
+		<source src="sounds/goal met.mp3" type="audio/mp3">
+		<source src="sounds/goal met.ogg" type="audio/ogg">
+	</audio>
+	
+	
+</body>
+</html>
